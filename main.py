@@ -62,7 +62,7 @@ def accuracy(prediction, label):
 
 def setup_vanilla_wings(args):
 
-    root = '/multiview/datasets/papillon/part_crops_gen'
+    root = '/multiview/datasets/papillon/part_crops_new'
     train_data = dataset.WingDataset(root, train=True)
     test_data = dataset.WingDataset(root, train=False)
 
@@ -93,7 +93,7 @@ def setup_vanilla_wings(args):
 def setup_wingnet(args):
 
     #root = '/multiview/datasets/papillon/part_crops_gen'
-    root = '/multiview/datasets/papillon/part_crops_gen'
+    root = '/multiview/datasets/papillon/part_crops_new'
 
     largs = dict(
         batch_size=args.batch_size,
@@ -103,10 +103,11 @@ def setup_wingnet(args):
     kwargs = dict()
     invariant = args.invariant
     if invariant:
-        kwargs.update(num_trans=args.num_trans)
+        kwargs.update(num_trans=args.num_trans )##return part ids with class labels and images
         dataset_class = dataset.InvariantWingDataset
         largs.update(collate_fn=dataset.multi_collate)
     else:
+        kwargs.update(parts=True)
         dataset_class = dataset.WingDataset
 
     train_data = dataset_class(root, True, **kwargs)
@@ -156,7 +157,7 @@ def setup_wingnet(args):
 
 def setup_multiwing_weighting(args, use50=False):
 
-    root = '/multiview/datasets/papillon/part_crops_gen'
+    root = '/multiview/datasets/papillon/part_crops_new'
     train_data = dataset.SegStatsAndWingsDataset(root, train=True)
     test_data = dataset.SegStatsAndWingsDataset(root, train=False)
 
@@ -169,11 +170,15 @@ def setup_multiwing_weighting(args, use50=False):
     DataLoader = torch.utils.data.DataLoader
     train_load = DataLoader(train_data, shuffle=True, **kwargs)
     test_load = DataLoader(test_data, shuffle=False, **kwargs)
-
+    
+    special = args.special ## special modification, use resnet base on each wing, no invariant layers
 #    import pdb; pdb.set_trace()
     if args.init_pretrained:
-        net = dnnutil.network.load_model(model.WingnetA, args.init_pretrained)
-        net.basenet = dnnutil.network.load_model(model.Wingnet,
+        net = dnnutil.network.load_model(model.WingnetA, args.init_pretrained, special=special)
+        if special:
+            net.basenet = dnnutil.network.load_model(model.BFResnet, args.init_pretrained)
+        else:
+            net.basenet = dnnutil.network.load_model(model.Wingnet,
                         args.init_pretrained, branches=4)
     else:
         net = dnnutil.network.load_model(model.WingnetA, args.model)
@@ -181,7 +186,7 @@ def setup_multiwing_weighting(args, use50=False):
     params = net.parameters()
     opt = torch.optim.Adam(params, lr=args.lr, weight_decay=1e-4)
     loss_fn = torch.nn.CrossEntropyLoss()
-    trainer = training.SegMultiwingTrainer(net, opt, loss_fn, accuracy)
+    trainer = training.SegMultiwingTrainer(net, opt, loss_fn, accuracy, special=special)
 
     state = SimpleNamespace(
         train_load=train_load,
@@ -223,6 +228,10 @@ def main():
         help='Freeze the weights of the base network')
     parser.add_argument('--invariant', action='store_true',
         help='Train Invariant network with contrast loss')
+    parser.add_argument('--drop', action='store_true',
+        help='Drop Learning rate by one order of magnitude after 25 epochs')
+    parser.add_argument('--special', action='store_true',
+        help='Use resnet, without wing branches')
     args = parser.parse_args()
 
 
@@ -250,15 +259,20 @@ def main():
         n_classes = 0
 
     for e in range(args.start, args.start + args.epochs):
+        
+
         with manager.run_dir.joinpath('.lr').open('r') as f:
             lr = float(f.read().strip())
-            optim.param_groups[-1]['lr'] = lr
+            if args.drop and e >= 25:
+                optim.param_groups[-1]['lr'] = lr*.1
+            else:
+                optim.param_groups[-1]['lr'] = lr
         
         start = time.time()
         if n_classes != 0:
             train_loss, train_acc, train_class_acc = trainer.train(train_load, e, nclasses = n_classes)
             test_loss, test_acc, test_class_acc  = trainer.eval(test_load, e,nclasses = n_classes)
-            np.savez("class_acc/multi/cmatrix_{}".format(str(e)),test = test_class_acc, train=train_class_acc)        
+            np.savez("class_acc/multi/pmatrix_{}".format(str(e)),test = test_class_acc, train=train_class_acc)        
         else:
             train_loss, train_acc = trainer.train(train_load, e, nclasses = n_classes)
             test_loss, test_acc   = trainer.eval(test_load, e,nclasses = n_classes)

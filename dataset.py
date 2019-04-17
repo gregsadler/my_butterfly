@@ -122,11 +122,12 @@ def _wing_data(root):
 
 class WingDataset(torch.utils.data.Dataset):
           
-    def __init__(self, root, train=True):
+    def __init__(self, root, train=True, parts= False):
         super(WingDataset, self).__init__()
         self.root = Path(root).joinpath('train' if train else 'test')
         self.train = train
-        
+        self.part_labels = parts
+
         classes, class_num, data, class_part = _wing_data(self.root)
         self.classes = classes
         self.class_num = class_num
@@ -164,12 +165,17 @@ class WingDataset(torch.utils.data.Dataset):
         img = self.augment(img)
         img = self.tensor_normalize(img)
         label = self.class_num[spec]
+        if self.part_labels:
+            return img, label, self.part_id[part] 
+        else:
+            return img, self.part_id[part]
 
-        return img, label, self.part_id[part] 
-    
 
 def _wing_seg_data(root, split='train'):
+    
     mask_loc = Path('/multiview/datasets/papillon/full_crops/masks_generated')
+    pose_loc = Path('/multiview/datasets/papillon/images_by_pose')
+
     classes = []
     data = []
     for class_dir in root.iterdir():
@@ -186,8 +192,17 @@ def _wing_seg_data(root, split='train'):
             imgdata_for_class[img].append((spec, img, part))
         # Add in all of the images
         for imgid in imgdata_for_class:
+            part_list = imgdata_for_class[imgid]
+            spec,img,part = part_list[0]
+            
+            pose_dir = pose_loc / spec
+            pose = "none"
+            for pose_ in pose_dir.iterdir():
+                if (pose_dir/pose_/(imgid+'.jpg')).exists():
+                    pose = str(pose_.parts[-1])
+                    pose.replace('\n', '')
             seg_file = mask_loc / split / (imgid + '.npz')
-            data.append((seg_file, imgdata_for_class[imgid]))
+            data.append((pose, seg_file, imgdata_for_class[imgid]))
 
     classes = sorted(classes)
     class_num = {classes[i]: i for i in range(len(classes))}
@@ -200,7 +215,7 @@ def _build_part_index(data, class_id, part_id):
     ii = 0
     all_data = []
     for i, entry in enumerate(data):
-        _, partlist = entry
+        _,_, partlist = entry
         for spec, img_id, part_str in partlist:
             fname = '{}/{}-{}.png'.format(spec, img_id, part_str)
             cid, pid = class_id[spec], part_id[part_str]
@@ -336,6 +351,16 @@ class SegStatsAndWingsDataset(torch.utils.data.Dataset):
             self.augment = torchvision.transforms.Resize((224, 224))
         self.tensor_normalize = _normalized_tensor_transform()
 
+        self.part_index = {
+            'rvh': 0, 'lvh':4, 'rvf': 1, 'lvf':5,
+            'rdh':2, 'ldh': 6, 'rdf': 3, 'ldf': 7,
+        }
+        
+        self.poses = {
+                'dorsal_full': 0, 'dorsal_left': 1,  'dorsal_left_ventral_right':2 , 'dorsal_right':3,  
+                'dorsal_right_ventral_left':4, 'ventral_full':5, 'ventral_left':6, 'ventral_right':7, 'none':8 }
+
+
     def __len__(self):
         return len(self.data)
 
@@ -349,20 +374,23 @@ class SegStatsAndWingsDataset(torch.utils.data.Dataset):
         return trans
 
     def __getitem__(self, index):
-        segfile, partlist = self.data[index]
-        
-
+        pose, segfile, partlist = self.data[index]
         if segfile.name not in self.seg_stats:
-            np_seg_stats, np_parts_present = DP.seg_stats_from_npz(segfile)
+            np_seg_stats, np_parts_present =DP.seg_stats_from_npz(segfile) 
             seg_stats = torch.from_numpy(np.float32(np_seg_stats).flatten())
             valid_part_mask = torch.from_numpy(np.float32(np_parts_present).flatten())[:-1] #[1:]
             self.seg_stats[segfile.name] = [seg_stats, valid_part_mask]
         else:
             seg_stats, valid_part_mask = self.seg_stats[segfile.name]
 
+
         part_imgs = []
         part_ids = []
+        
         for spec, img_id, part_id in partlist:
+            if valid_part_mask[self.part_index[part_id]] == 0:
+                continue
+       
             img_file = self.root / spec / (img_id + '-' + part_id + '.png')
             img = Image.open(img_file).convert('RGB')
             img = self.tensor_normalize(self.augment(img))
@@ -370,8 +398,11 @@ class SegStatsAndWingsDataset(torch.utils.data.Dataset):
 
             part_imgs.append(img)
             part_ids.append(part_id)
+        if len(part_ids) == 0:
+            print(partlist)
         part_imgs = torch.stack(part_imgs, 0)
-        return seg_stats, part_imgs, class_label, part_ids, valid_part_mask
+        pose_r = self.poses[pose] 
+        return seg_stats, part_imgs, class_label, part_ids, valid_part_mask, pose_r
 
 
 # ******************************************************** #
@@ -408,7 +439,7 @@ def seg_multiwing_collate(samples):
         }
 
 
-    PART_INDEX_OF = {
+    PART_INDEX = {
             'rvh': 0, 'lvh':4, 'rvf': 1, 'lvf':5,
             'rdh':2, 'ldh': 6, 'rdf': 3, 'ldf': 7,
         }
@@ -420,19 +451,22 @@ def seg_multiwing_collate(samples):
     labels_t  = [ torch.LongTensor([x]) for x in labels ]
     part_ids  = [ x[3] for x in samples ]
     valpmasks  = [ x[4] for x in samples ]
+    poses = [x[5]for x in samples]
+    poses_t = [ torch.LongTensor([x]) for x in poses]
+
 
     part_ids_f= list(chain.from_iterable(part_ids))
-    part_ids_t= [ torch.Tensor([PART_INDEX_OF[x]]) for x in part_ids_f ]
+    part_ids_t= [ torch.Tensor([PART_INDEX[x]]) for x in part_ids_f ]
     part_cnts = [ torch.Tensor([len(x)]) for x in part_ids ]
     stats_c   = torch.stack(stats,0)
     parts_c   = torch.cat(part_sets,0)
 
+    poses_c = torch.stack(poses_t,0)
     labels_c  = torch.stack(labels_t,0)
     partcnts_c= torch.stack(part_cnts,0)
     partids_c = torch.stack(part_ids_t,0).long()
     validpartmasks_c = torch.stack(valpmasks,0)
-
-    return stats_c, parts_c, labels_c, partids_c, partcnts_c, validpartmasks_c
+    return stats_c, parts_c, labels_c, partids_c, partcnts_c, validpartmasks_c, poses_c
 
 
 class RandomSubsetSampler(torch.utils.data.Sampler):

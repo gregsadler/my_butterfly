@@ -136,10 +136,13 @@ class Wingnet(torch.nn.Module):
 
 class WingnetA(torch.nn.Module):
     '''Multiple-wing aggregation on wingnet'''
-    def __init__(self, nparts=(8,1), nclasses=150, invar=True, model='resnet18'):
+    def __init__(self, nparts=(8,1), nclasses=150, invar=True, model='resnet18', special=False):
         super(WingnetA, self).__init__()
-
-        self.basenet = Wingnet(nclasses, 4, invar, model)
+        self.special = special
+        if special:
+            self.basenet = BFResnet()
+        else:
+            self.basenet = Wingnet(nclasses, 4, invar, model)
 
         self.aggregate_branch = torch.nn.Sequential(
             torch.nn.Linear(2 * (nparts[0] + nparts[1]), 256),
@@ -151,13 +154,13 @@ class WingnetA(torch.nn.Module):
 
     def forward(self, stats, part_img, valid_part_mask):
         
-        part_pred = self.basenet.forward(part_img)[1]
-
+        part_pred = self.basenet.forward(part_img)# [1]
+        if not self.special:
+            part_pred = part_pred[1]
         weight = self.aggregate_branch(stats)
         weight = weight * valid_part_mask
-        weight = weight / weight.norm(1, 1, keepdim=True)
-        
-        #pred = 
+        if not self.special:
+            weight = weight / (weight.norm(1, 1, keepdim=True) + .01)
 
         return weight, part_pred
 

@@ -21,7 +21,7 @@ def get_net(args,checkpoint, nclasses = 150):
     #import pdb; pdb.set_trace()
     net_type = getattr(torchvision.models, args.network)
     net = net_type()
-    net.fc = torch.nn.Linear(512, nclasses)
+    net.fc = torch.nn.Linear(2048, nclasses)
     cuda = torch.cuda.is_available() 
     if cuda:
         net = net.cuda()
@@ -64,12 +64,12 @@ def main():
     n_classes = 150 
 
     for e in range(args.start, args.start + args.epochs):
-        if e >= 25:
-            optim.param_groups[-1]['lr'] = args.lr * 0.1
+        #if e >= 25:
+        #    optim.param_groups[-1]['lr'] = args.lr * 0.1
         start = time.time()
 
-        train_loss, train_acc, train_class_acc  = trainer.train(train_load, e,nclasses = n_classes)
-        test_loss, test_acc, test_class_acc  = trainer.eval(test_load, e, nclasses = n_classes)
+        train_loss, train_acc  = trainer.train(train_load, e)
+        test_loss, test_acc  = trainer.eval(test_load, e)
         np.savez("class_acc/base/cmatrix_{}".format(str(e)),test = test_class_acc, train=train_class_acc)
 
         t = time.time() - start

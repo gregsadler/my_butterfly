@@ -13,6 +13,14 @@ def class_accuracy(prediction, label, n_classes):
 
 
 
+def pose_accuracy(prediction, label, poses):
+    mat = np.zeros((9,2))
+    preds = prediction.argmax(1)
+    ars = [poses.detach().cpu().numpy(),(label.detach().cpu().numpy()==preds.detach().cpu().numpy()).astype(int)]
+    np.add.at(mat, ars, 1)
+    return mat
+
+
 class WingnetInvariantTrainer(dnnutil.Trainer):
 
     def __init__(self, net, optim, cls_loss, pair_loss, accuracy_metric, invariant,
@@ -29,7 +37,7 @@ class WingnetInvariantTrainer(dnnutil.Trainer):
     def _loss(self, emb, pred, labels, parts):
         pred_loss = self.cls_loss(pred, labels)
         pi_loss = self.pi_loss(emb, labels, parts)
-        loss = pred_loss + self.alpha * pi_loss
+        loss =  pred_loss + self.alpha * pi_loss
         return loss
 
     def _mask_select(self, emb, pred, part):
@@ -86,8 +94,9 @@ class WingnetInvariantTrainer(dnnutil.Trainer):
 
 class SegMultiwingTrainer(dnnutil.Trainer):
 
-    def __init__(self, net, optim, cls_loss, accuracy_metric):
+    def __init__(self, net, optim, cls_loss, accuracy_metric, special=False):
         super(SegMultiwingTrainer, self).__init__(net, optim, cls_loss, accuracy_metric)
+        self.special = special
 
     def _mask_select(self, pred, part):
         mask = (torch.ones(pred.size()[0], 4, dtype=torch.long) * 
@@ -117,18 +126,22 @@ class SegMultiwingTrainer(dnnutil.Trainer):
         self.optim.zero_grad()
         
         batch = dnnutil.tocuda(batch)
-        stats, parts, labels, partids, partcnts, vmasks = batch
+        stats, parts, labels, partids, partcnts, vmasks, poses = batch
         
+        interest = torch.tensor([42,76])
+
 
         partids_8 = partids
         partids = partids % 4
 
-
+        
         #import pdb; pdb.set_trace()
         weights, perpart_preds = self.net(stats, parts, vmasks)
-        perpart_preds = self._mask_select(perpart_preds, partids)
+        if not self.special:
+            perpart_preds = self._mask_select(perpart_preds, partids)
         labels_flat = labels.view(-1)
 
+        
         # Construct weighted sum of perpart_preds
         combined_pred = self.reweight_each_batch(
             weights, perpart_preds, partids_8, partcnts, labels_flat)
@@ -142,33 +155,38 @@ class SegMultiwingTrainer(dnnutil.Trainer):
             accuracy = self.measure_accuracy(combined_pred, labels_flat)
             if nclasses != 0:
                 class_acc = class_accuracy(combined_pred, labels_flat,nclasses)
+                pose_acc = pose_accuracy(combined_pred, labels_flat, poses)
         if nclasses != 0:
-            return loss, accuracy, class_acc
+            return loss, accuracy, pose_acc
         else:
             return loss, accuracy
 
     def test_batch(self, batch, nclasses=150):
         with torch.no_grad():
-            stats, parts, labels, partids, partcnts, vmasks = dnnutil.network.tocuda(batch)
+            stats, parts, labels, partids, partcnts, vmasks, poses = dnnutil.network.tocuda(batch)
             weights, perpart_preds = self.net(stats, parts, vmasks)
 
-            #import pdb; pdb.set_trace()
 
             partids_8 = partids
             partids = partids % 4
 
-
-            perpart_preds = self._mask_select(perpart_preds, partids)
+            if not self.special:
+                perpart_preds = self._mask_select(perpart_preds, partids)
             labels_flat = labels.view(labels.numel())
-
+            
             combined_pred = self.reweight_each_batch(
                 weights, perpart_preds, partids_8, partcnts, labels_flat)
 
             loss = self.loss_fn(combined_pred, labels_flat).item()
+
+            if loss != loss:
+                import pdb; pdb.set_trace()
+
             accuracy = self.measure_accuracy(combined_pred, labels_flat)
             if nclasses != 0:
+                pose_acc = pose_accuracy(combined_pred, labels_flat, poses)                
                 class_acc = class_accuracy(combined_pred, labels_flat,nclasses)
-                return loss, accuracy, class_acc
+                return loss, accuracy, pose_acc
             else:
                 return loss, accuracy
 
