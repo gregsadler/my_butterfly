@@ -231,7 +231,9 @@ def main():
     parser.add_argument('--drop', action='store_true',
         help='Drop Learning rate by one order of magnitude after 25 epochs')
     parser.add_argument('--special', action='store_true',
-        help='Use resnet, without wing branches')
+        help='Use resnet, without wing branches, best performance')
+    parser.add_argument("--cmatrix", action='store_true',
+        help="Print out confusion matrix")
     args = parser.parse_args()
 
 
@@ -272,11 +274,11 @@ def main():
         if n_classes != 0:
             train_loss, train_acc, train_class_acc = trainer.train(train_load, e, nclasses = n_classes)
             test_loss, test_acc, test_class_acc  = trainer.eval(test_load, e,nclasses = n_classes)
-            np.savez("class_acc/multi/pmatrix_{}".format(str(e)),test = test_class_acc, train=train_class_acc)        
+            if args.cmatrix:
+                np.savez("cmatrix",test = test_class_acc, train=train_class_acc)        
         else:
-            train_loss, train_acc = trainer.train(train_load, e, nclasses = n_classes)
-            test_loss, test_acc   = trainer.eval(test_load, e,nclasses = n_classes)
-        #import pdb; pdb.set_trace()
+            train_loss, train_acc = trainer.train(train_load, e)
+            test_loss, test_acc   = trainer.eval(test_load, e)
         t = time.time() - start
         lr = optim.param_groups[-1]['lr']
         logger.log(e, t, train_loss, train_acc, test_loss, test_acc, lr)
